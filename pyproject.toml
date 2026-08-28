@@ -1,0 +1,46 @@
+[project]
+name = "network-intrusion-mlops"
+version = "0.1.0"
+description = "Real-Time Layer 7 Network Intrusion Detection"
+requires-python = ">=3.11"
+dependencies = [
+"fastapi",
+"uvicorn",
+"torch",
+"scikit-learn",
+"onnxruntime",
+"prometheus-fastapi-instrumentator",
+"pydantic",
+"httpx"
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = [
+"ignore::DeprecationWarning",
+"ignore::UserWarning"
+]
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["."]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true

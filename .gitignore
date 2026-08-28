@@ -1,0 +1,42 @@
+# Python & Bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.egg-info/
+
+# Testing & Tool Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Compiled Model Artifacts & Data
+*.onnx
+*.pt
+*.pth
+*.pkl
+.models/
+
+# Logs & System Files
+*.log
+.DS_Store
+Thumbs.db
