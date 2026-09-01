@@ -7,7 +7,7 @@ from typing import ClassVar, Optional, cast
 import joblib
 import numpy as np
 import onnxruntime as ort
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from src.api.schemas import AnomalyScoreResponse, TelemetryPayload
 
@@ -35,7 +35,7 @@ class InferenceEngine:
         if not onnx_path.exists():
             raise FileNotFoundError(f"ONNX model file not found at {onnx_path}")
 
-        self.scaler: StandardScaler = joblib.load(scaler_path)
+        self.scaler: StandardScaler | MinMaxScaler = joblib.load(scaler_path)
         self.session: ort.InferenceSession = ort.InferenceSession(str(onnx_path))
         self.input_name: str = self.session.get_inputs()[0].name
         self.output_name: str = self.session.get_outputs()[0].name

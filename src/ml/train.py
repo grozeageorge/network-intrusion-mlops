@@ -1,7 +1,8 @@
 """Module for training PyTorch Autoencoder model for network HTTP anomaly detection.
 
-Generates synthetic telemetry data, trains an autoencoder neural network,
-exports the trained model to ONNX format, and saves the feature scaler.
+Preprocesses tabular telemetry data, trains an autoencoder neural network,
+tracks experiments using MLflow, exports the trained model to ONNX format,
+and serializes the fitted feature scaler.
 """
 
 import logging
@@ -9,9 +10,11 @@ import sys
 from pathlib import Path
 
 import joblib
+import mlflow
 import numpy as np
+import pandas as pd
 import torch
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -61,6 +64,42 @@ class Autoencoder(nn.Module):
         encoded: torch.Tensor = self.encoder(x)
         decoded: torch.Tensor = self.decoder(encoded)
         return decoded
+
+
+def preprocess_data(
+    csv_path: str | Path,
+    drop_columns: list[str] | None = None,
+) -> tuple[np.ndarray, MinMaxScaler]:
+    """Load, clean, and scale tabular telemetry data from a CSV file.
+
+    Args:
+        csv_path: Path to the raw CSV dataset.
+        drop_columns: Optional list of metadata columns to discard.
+
+    Returns:
+        tuple[np.ndarray, MinMaxScaler]: Cleaned float32 scaled array of shape (samples, features)
+            and the fitted MinMaxScaler instance for serialization.
+    """
+    if drop_columns is None:
+        drop_columns = ["Source IP", "Destination IP", "Timestamp", "Label"]
+
+    df: pd.DataFrame = pd.read_csv(csv_path)
+
+    df = df.drop(columns=drop_columns, errors="ignore")
+    df = df.select_dtypes(include=[np.number])
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+    scaler: MinMaxScaler = MinMaxScaler()
+    scaled_data: np.ndarray = scaler.fit_transform(df.to_numpy()).astype(np.float32)
+
+    logger.info(
+        "Preprocessed dataset %s into shape %s with values in [%.4f, %.4f]",
+        csv_path,
+        scaled_data.shape,
+        scaled_data.min(),
+        scaled_data.max(),
+    )
+    return scaled_data, scaler
 
 
 def generate_synthetic_telemetry(num_samples: int = 5000, seed: int = 42) -> np.ndarray:
@@ -131,7 +170,7 @@ def train_model(
     learning_rate: float = 1e-3,
     seed: int = 42,
 ) -> Autoencoder:
-    """Train PyTorch Autoencoder on scaled normal traffic data.
+    """Train PyTorch Autoencoder on scaled normal traffic data and log metrics to MLflow.
 
     Args:
         data: Preprocessed telemetry dataset.
@@ -166,6 +205,9 @@ def train_model(
             total_loss += loss.item() * batch_x.size(0)
 
         avg_loss: float = total_loss / len(dataset)
+        if mlflow.active_run() is not None:
+            mlflow.log_metric("train_loss", avg_loss, step=epoch)
+
         if epoch % 10 == 0 or epoch == 1 or epoch == epochs:
             logger.info("Epoch [%d/%d] - Loss (MSE): %.6f", epoch, epochs, avg_loss)
 
@@ -173,11 +215,11 @@ def train_model(
     return model
 
 
-def export_scaler(scaler: StandardScaler, output_path: Path) -> None:
-    """Save fitted StandardScaler to disk using joblib.
+def export_scaler(scaler: StandardScaler | MinMaxScaler, output_path: Path) -> None:
+    """Save fitted scaler to disk using joblib.
 
     Args:
-        scaler: Fitted StandardScaler instance.
+        scaler: Fitted StandardScaler or MinMaxScaler instance.
         output_path: Destination path for serialized file.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,23 +259,43 @@ def export_onnx(model: Autoencoder, output_path: Path) -> None:
 
 
 def main() -> None:
-    """Execute machine learning training pipeline and ONNX export."""
+    """Execute machine learning training pipeline, MLflow tracking, and ONNX export."""
     models_dir: Path = Path("models")
+    models_dir.mkdir(parents=True, exist_ok=True)
     scaler_path: Path = models_dir / "scaler.pkl"
     onnx_path: Path = models_dir / "autoencoder.onnx"
+    data_path: Path = Path("data/raw/cicids2017_sample.csv")
 
-    raw_data: np.ndarray = generate_synthetic_telemetry(num_samples=5000, seed=42)
+    epochs: int = 50
+    batch_size: int = 64
+    learning_rate: float = 1e-3
 
-    scaler: StandardScaler = StandardScaler()
-    scaled_data: np.ndarray = scaler.fit_transform(raw_data).astype(np.float32)
+    logger.info("Starting ML pipeline with dataset: %s", data_path)
+    scaled_data, scaler = preprocess_data(data_path)
 
-    export_scaler(scaler, scaler_path)
+    with mlflow.start_run():
+        mlflow.log_params(
+            {
+                "learning_rate": learning_rate,
+                "epochs": epochs,
+                "batch_size": batch_size,
+            }
+        )
 
-    model: Autoencoder = train_model(scaled_data, epochs=50, batch_size=64, learning_rate=1e-3)
+        model: Autoencoder = train_model(
+            scaled_data,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+        )
 
-    export_onnx(model, onnx_path)
+        export_scaler(scaler, scaler_path)
+        export_onnx(model, onnx_path)
 
-    logger.info("ML training and ONNX export completed successfully.")
+        mlflow.log_artifact(str(scaler_path))
+        mlflow.log_artifact(str(onnx_path))
+
+    logger.info("ML training, artifact export, and MLflow tracking completed successfully.")
 
 
 if __name__ == "__main__":
