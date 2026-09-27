@@ -1,7 +1,8 @@
 """Module for training PyTorch Autoencoder model for network HTTP anomaly detection.
 
-Generates synthetic telemetry data, trains an autoencoder neural network,
-exports the trained model to ONNX format, and saves the feature scaler.
+Preprocesses tabular telemetry data, trains an autoencoder neural network,
+tracks experiments using MLflow, exports the trained model to ONNX format,
+and serializes the fitted feature scaler.
 """
 
 import logging
@@ -9,9 +10,11 @@ import sys
 from pathlib import Path
 
 import joblib
+import mlflow
 import numpy as np
+import pandas as pd
 import torch
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -31,97 +34,83 @@ logger: logging.Logger = logging.getLogger("network_intrusion_mlops_ml")
 class Autoencoder(nn.Module):
     """PyTorch Autoencoder for network HTTP anomaly detection.
 
-    Encoder topology: 5 -> 3 -> 2
-    Decoder topology: 2 -> 3 -> 5
+    Encoder topology: num_features -> max(1, num_features // 2) -> max(1, num_features // 4)
+    Decoder topology: max(1, num_features // 4) -> max(1, num_features // 2) -> num_features
     """
 
-    def __init__(self) -> None:
-        """Initialize encoder and decoder network layers."""
+    def __init__(self, num_features: int = 5) -> None:
+        """Initialize encoder and decoder network layers.
+
+        Args:
+            num_features: Number of input features in tabular dataset.
+        """
         super().__init__()
+        self.num_features: int = num_features
+        hidden_dim1: int = max(1, num_features // 2)
+        hidden_dim2: int = max(1, num_features // 4)
+
         self.encoder: nn.Sequential = nn.Sequential(
-            nn.Linear(5, 3),
+            nn.Linear(num_features, hidden_dim1),
             nn.LeakyReLU(0.1),
-            nn.Linear(3, 2),
+            nn.Linear(hidden_dim1, hidden_dim2),
         )
         self.decoder: nn.Sequential = nn.Sequential(
-            nn.Linear(2, 3),
+            nn.Linear(hidden_dim2, hidden_dim1),
             nn.LeakyReLU(0.1),
-            nn.Linear(3, 5),
+            nn.Linear(hidden_dim1, num_features),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Perform forward pass through encoder and decoder.
 
         Args:
-            x: Input tensor of shape (batch_size, 5).
+            x: Input tensor of shape (batch_size, num_features).
 
         Returns:
-            Reconstructed output tensor of shape (batch_size, 5).
+            Reconstructed output tensor of shape (batch_size, num_features).
         """
         encoded: torch.Tensor = self.encoder(x)
         decoded: torch.Tensor = self.decoder(encoded)
         return decoded
 
 
-def generate_synthetic_telemetry(num_samples: int = 5000, seed: int = 42) -> np.ndarray:
-    """Generate synthetic normal network HTTP telemetry data.
-
-    Features (5 dimensions):
-    1. requests_per_minute: float ~ Normal(120, 20)
-    2. payload_bytes: float ~ Normal(2500, 500)
-    3. header_entropy: float ~ Normal(3.5, 0.4)
-    4. uri_depth: float ~ Normal(3.0, 1.0)
-    5. error_rate: float ~ Beta(0.5, 20.0)
+def preprocess_data(
+    csv_path: str | Path,
+    drop_columns: list[str] | None = None,
+) -> tuple[np.ndarray, MinMaxScaler]:
+    """Load, clean, and scale tabular telemetry data from a CSV file.
 
     Args:
-        num_samples: Number of telemetry samples to generate.
-        seed: Random seed for reproducibility.
+        csv_path: Path to the raw CSV dataset.
+        drop_columns: Optional list of metadata columns to discard.
 
     Returns:
-        Numpy array of shape (num_samples, 5) with float32 data.
+        tuple[np.ndarray, MinMaxScaler]: Cleaned float32 scaled array of shape (samples, features)
+            and the fitted MinMaxScaler instance for serialization.
     """
-    np.random.seed(seed)
+    if drop_columns is None:
+        drop_columns = ["Source IP", "Destination IP", "Timestamp", "Label"]
 
-    requests_per_minute = np.clip(
-        np.random.normal(loc=120.0, scale=20.0, size=num_samples),
-        a_min=1.0,
-        a_max=None,
-    )
-    payload_bytes = np.clip(
-        np.random.normal(loc=2500.0, scale=500.0, size=num_samples),
-        a_min=10.0,
-        a_max=None,
-    )
-    header_entropy = np.clip(
-        np.random.normal(loc=3.5, scale=0.4, size=num_samples),
-        a_min=0.0,
-        a_max=8.0,
-    )
-    uri_depth = np.clip(
-        np.random.normal(loc=3.0, scale=1.0, size=num_samples),
-        a_min=1.0,
-        a_max=10.0,
-    )
-    error_rate = np.clip(
-        np.random.beta(a=0.5, b=20.0, size=num_samples),
-        a_min=0.0,
-        a_max=1.0,
-    )
+    df: pd.DataFrame = pd.read_csv(csv_path)
 
-    data: np.ndarray = np.column_stack(
-        [
-            requests_per_minute,
-            payload_bytes,
-            header_entropy,
-            uri_depth,
-            error_rate,
-        ]
-    ).astype(np.float32)
+    if "Label" in df.columns:
+        df = df[df["Label"].astype(str).str.strip().str.upper() == "BENIGN"]
+
+    df = df.drop(columns=drop_columns, errors="ignore")
+    df = df.select_dtypes(include=[np.number])
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+    scaler: MinMaxScaler = MinMaxScaler()
+    scaled_data: np.ndarray = scaler.fit_transform(df.to_numpy()).astype(np.float32)
 
     logger.info(
-        "Generated %d synthetic normal telemetry samples with shape %s", num_samples, data.shape
+        "Preprocessed dataset %s into shape %s with values in [%.4f, %.4f]",
+        csv_path,
+        scaled_data.shape,
+        scaled_data.min(),
+        scaled_data.max(),
     )
-    return data
+    return scaled_data, scaler
 
 
 def train_model(
@@ -130,8 +119,9 @@ def train_model(
     batch_size: int = 64,
     learning_rate: float = 1e-3,
     seed: int = 42,
+    model: Autoencoder | None = None,
 ) -> Autoencoder:
-    """Train PyTorch Autoencoder on scaled normal traffic data.
+    """Train PyTorch Autoencoder on scaled normal traffic data and log metrics to MLflow.
 
     Args:
         data: Preprocessed telemetry dataset.
@@ -139,6 +129,8 @@ def train_model(
         batch_size: DataLoader mini-batch size.
         learning_rate: Optimizer learning rate.
         seed: Random seed for PyTorch weight initialization.
+        model: Optional pre-initialized Autoencoder instance. If None, initializes
+            Autoencoder(num_features=data.shape[1]).
 
     Returns:
         Trained Autoencoder model instance.
@@ -149,7 +141,9 @@ def train_model(
     dataset: TensorDataset = TensorDataset(tensor_data, tensor_data)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    model: Autoencoder = Autoencoder()
+    if model is None:
+        model = Autoencoder(num_features=int(data.shape[1]))
+
     criterion: nn.MSELoss = nn.MSELoss()
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -166,6 +160,9 @@ def train_model(
             total_loss += loss.item() * batch_x.size(0)
 
         avg_loss: float = total_loss / len(dataset)
+        if mlflow.active_run() is not None:
+            mlflow.log_metric("train_loss", avg_loss, step=epoch)
+
         if epoch % 10 == 0 or epoch == 1 or epoch == epochs:
             logger.info("Epoch [%d/%d] - Loss (MSE): %.6f", epoch, epochs, avg_loss)
 
@@ -173,11 +170,11 @@ def train_model(
     return model
 
 
-def export_scaler(scaler: StandardScaler, output_path: Path) -> None:
-    """Save fitted StandardScaler to disk using joblib.
+def export_scaler(scaler: StandardScaler | MinMaxScaler, output_path: Path) -> None:
+    """Save fitted scaler to disk using joblib.
 
     Args:
-        scaler: Fitted StandardScaler instance.
+        scaler: Fitted StandardScaler or MinMaxScaler instance.
         output_path: Destination path for serialized file.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,7 +192,7 @@ def export_onnx(model: Autoencoder, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     model.eval()
 
-    dummy_input: torch.Tensor = torch.randn(1, 5, dtype=torch.float32)
+    dummy_input: torch.Tensor = torch.randn(1, model.num_features, dtype=torch.float32)
     dynamic_axes: dict[str, dict[int, str]] = {
         "input": {0: "batch_size"},
         "output": {0: "batch_size"},
@@ -217,23 +214,46 @@ def export_onnx(model: Autoencoder, output_path: Path) -> None:
 
 
 def main() -> None:
-    """Execute machine learning training pipeline and ONNX export."""
+    """Execute machine learning training pipeline, MLflow tracking, and ONNX export."""
     models_dir: Path = Path("models")
+    models_dir.mkdir(parents=True, exist_ok=True)
     scaler_path: Path = models_dir / "scaler.pkl"
     onnx_path: Path = models_dir / "autoencoder.onnx"
+    data_path: Path = Path("data/raw/cicids2017_sample.csv")
 
-    raw_data: np.ndarray = generate_synthetic_telemetry(num_samples=5000, seed=42)
+    epochs: int = 50
+    batch_size: int = 64
+    learning_rate: float = 1e-3
 
-    scaler: StandardScaler = StandardScaler()
-    scaled_data: np.ndarray = scaler.fit_transform(raw_data).astype(np.float32)
+    logger.info("Starting ML pipeline with dataset: %s", data_path)
+    scaled_data, scaler = preprocess_data(data_path)
+    num_features: int = int(scaled_data.shape[1])
+    autoencoder: Autoencoder = Autoencoder(num_features=num_features)
 
-    export_scaler(scaler, scaler_path)
+    with mlflow.start_run():
+        mlflow.log_params(
+            {
+                "learning_rate": learning_rate,
+                "epochs": epochs,
+                "batch_size": batch_size,
+            }
+        )
 
-    model: Autoencoder = train_model(scaled_data, epochs=50, batch_size=64, learning_rate=1e-3)
+        model: Autoencoder = train_model(
+            scaled_data,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            model=autoencoder,
+        )
 
-    export_onnx(model, onnx_path)
+        export_scaler(scaler, scaler_path)
+        export_onnx(model, onnx_path)
 
-    logger.info("ML training and ONNX export completed successfully.")
+        mlflow.log_artifact(str(scaler_path))
+        mlflow.log_artifact(str(onnx_path))
+
+    logger.info("ML training, artifact export, and MLflow tracking completed successfully.")
 
 
 if __name__ == "__main__":

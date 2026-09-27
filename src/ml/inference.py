@@ -7,7 +7,7 @@ from typing import ClassVar, Optional, cast
 import joblib
 import numpy as np
 import onnxruntime as ort
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from src.api.schemas import AnomalyScoreResponse, TelemetryPayload
 
@@ -35,7 +35,7 @@ class InferenceEngine:
         if not onnx_path.exists():
             raise FileNotFoundError(f"ONNX model file not found at {onnx_path}")
 
-        self.scaler: StandardScaler = joblib.load(scaler_path)
+        self.scaler: StandardScaler | MinMaxScaler = joblib.load(scaler_path)
         self.session: ort.InferenceSession = ort.InferenceSession(str(onnx_path))
         self.input_name: str = self.session.get_inputs()[0].name
         self.output_name: str = self.session.get_outputs()[0].name
@@ -74,17 +74,8 @@ class InferenceEngine:
         Returns:
             AnomalyScoreResponse containing MSE score and anomaly boolean flag.
         """
-        raw_features: np.ndarray = np.array(
-            [
-                [
-                    payload.requests_per_minute,
-                    payload.payload_bytes,
-                    payload.header_entropy,
-                    float(payload.uri_depth),
-                    payload.error_rate,
-                ]
-            ],
-            dtype=np.float32,
+        raw_features: np.ndarray = np.array(payload.features, dtype=np.float32).reshape(
+            1, len(payload.features)
         )
 
         scaled_features: np.ndarray = self.scaler.transform(raw_features).astype(np.float32)

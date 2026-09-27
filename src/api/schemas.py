@@ -6,32 +6,10 @@ from pydantic import BaseModel, Field
 class TelemetryPayload(BaseModel):
     """HTTP network traffic telemetry payload for anomaly scoring."""
 
-    requests_per_minute: float = Field(
+    features: list[float] = Field(
         ...,
-        description="Number of HTTP requests per minute",
-        ge=0.0,
-    )
-    payload_bytes: float = Field(
-        ...,
-        description="Average HTTP payload size in bytes",
-        ge=0.0,
-    )
-    header_entropy: float = Field(
-        ...,
-        description="Shannon entropy of HTTP headers",
-        ge=0.0,
-        le=8.0,
-    )
-    uri_depth: int = Field(
-        ...,
-        description="Depth of HTTP URI path segments",
-        ge=0,
-    )
-    error_rate: float = Field(
-        ...,
-        description="HTTP error status rate (0.0 to 1.0)",
-        ge=0.0,
-        le=1.0,
+        description="Vector of numerical telemetry feature values for anomaly scoring",
+        min_length=1,
     )
 
 

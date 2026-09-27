@@ -38,5 +38,7 @@ env/
 
 # Logs & System Files
 *.log
+*.db
+mlruns/
 .DS_Store
 Thumbs.db
