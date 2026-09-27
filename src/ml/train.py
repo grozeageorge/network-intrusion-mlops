@@ -34,32 +34,40 @@ logger: logging.Logger = logging.getLogger("network_intrusion_mlops_ml")
 class Autoencoder(nn.Module):
     """PyTorch Autoencoder for network HTTP anomaly detection.
 
-    Encoder topology: 5 -> 3 -> 2
-    Decoder topology: 2 -> 3 -> 5
+    Encoder topology: num_features -> max(1, num_features // 2) -> max(1, num_features // 4)
+    Decoder topology: max(1, num_features // 4) -> max(1, num_features // 2) -> num_features
     """
 
-    def __init__(self) -> None:
-        """Initialize encoder and decoder network layers."""
+    def __init__(self, num_features: int = 5) -> None:
+        """Initialize encoder and decoder network layers.
+
+        Args:
+            num_features: Number of input features in tabular dataset.
+        """
         super().__init__()
+        self.num_features: int = num_features
+        hidden_dim1: int = max(1, num_features // 2)
+        hidden_dim2: int = max(1, num_features // 4)
+
         self.encoder: nn.Sequential = nn.Sequential(
-            nn.Linear(5, 3),
+            nn.Linear(num_features, hidden_dim1),
             nn.LeakyReLU(0.1),
-            nn.Linear(3, 2),
+            nn.Linear(hidden_dim1, hidden_dim2),
         )
         self.decoder: nn.Sequential = nn.Sequential(
-            nn.Linear(2, 3),
+            nn.Linear(hidden_dim2, hidden_dim1),
             nn.LeakyReLU(0.1),
-            nn.Linear(3, 5),
+            nn.Linear(hidden_dim1, num_features),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Perform forward pass through encoder and decoder.
 
         Args:
-            x: Input tensor of shape (batch_size, 5).
+            x: Input tensor of shape (batch_size, num_features).
 
         Returns:
-            Reconstructed output tensor of shape (batch_size, 5).
+            Reconstructed output tensor of shape (batch_size, num_features).
         """
         encoded: torch.Tensor = self.encoder(x)
         decoded: torch.Tensor = self.decoder(encoded)
@@ -102,73 +110,13 @@ def preprocess_data(
     return scaled_data, scaler
 
 
-def generate_synthetic_telemetry(num_samples: int = 5000, seed: int = 42) -> np.ndarray:
-    """Generate synthetic normal network HTTP telemetry data.
-
-    Features (5 dimensions):
-    1. requests_per_minute: float ~ Normal(120, 20)
-    2. payload_bytes: float ~ Normal(2500, 500)
-    3. header_entropy: float ~ Normal(3.5, 0.4)
-    4. uri_depth: float ~ Normal(3.0, 1.0)
-    5. error_rate: float ~ Beta(0.5, 20.0)
-
-    Args:
-        num_samples: Number of telemetry samples to generate.
-        seed: Random seed for reproducibility.
-
-    Returns:
-        Numpy array of shape (num_samples, 5) with float32 data.
-    """
-    np.random.seed(seed)
-
-    requests_per_minute = np.clip(
-        np.random.normal(loc=120.0, scale=20.0, size=num_samples),
-        a_min=1.0,
-        a_max=None,
-    )
-    payload_bytes = np.clip(
-        np.random.normal(loc=2500.0, scale=500.0, size=num_samples),
-        a_min=10.0,
-        a_max=None,
-    )
-    header_entropy = np.clip(
-        np.random.normal(loc=3.5, scale=0.4, size=num_samples),
-        a_min=0.0,
-        a_max=8.0,
-    )
-    uri_depth = np.clip(
-        np.random.normal(loc=3.0, scale=1.0, size=num_samples),
-        a_min=1.0,
-        a_max=10.0,
-    )
-    error_rate = np.clip(
-        np.random.beta(a=0.5, b=20.0, size=num_samples),
-        a_min=0.0,
-        a_max=1.0,
-    )
-
-    data: np.ndarray = np.column_stack(
-        [
-            requests_per_minute,
-            payload_bytes,
-            header_entropy,
-            uri_depth,
-            error_rate,
-        ]
-    ).astype(np.float32)
-
-    logger.info(
-        "Generated %d synthetic normal telemetry samples with shape %s", num_samples, data.shape
-    )
-    return data
-
-
 def train_model(
     data: np.ndarray,
     epochs: int = 50,
     batch_size: int = 64,
     learning_rate: float = 1e-3,
     seed: int = 42,
+    model: Autoencoder | None = None,
 ) -> Autoencoder:
     """Train PyTorch Autoencoder on scaled normal traffic data and log metrics to MLflow.
 
@@ -178,6 +126,8 @@ def train_model(
         batch_size: DataLoader mini-batch size.
         learning_rate: Optimizer learning rate.
         seed: Random seed for PyTorch weight initialization.
+        model: Optional pre-initialized Autoencoder instance. If None, initializes
+            Autoencoder(num_features=data.shape[1]).
 
     Returns:
         Trained Autoencoder model instance.
@@ -188,7 +138,9 @@ def train_model(
     dataset: TensorDataset = TensorDataset(tensor_data, tensor_data)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    model: Autoencoder = Autoencoder()
+    if model is None:
+        model = Autoencoder(num_features=int(data.shape[1]))
+
     criterion: nn.MSELoss = nn.MSELoss()
     optimizer: optim.Optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -237,7 +189,7 @@ def export_onnx(model: Autoencoder, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     model.eval()
 
-    dummy_input: torch.Tensor = torch.randn(1, 5, dtype=torch.float32)
+    dummy_input: torch.Tensor = torch.randn(1, model.num_features, dtype=torch.float32)
     dynamic_axes: dict[str, dict[int, str]] = {
         "input": {0: "batch_size"},
         "output": {0: "batch_size"},
@@ -272,6 +224,8 @@ def main() -> None:
 
     logger.info("Starting ML pipeline with dataset: %s", data_path)
     scaled_data, scaler = preprocess_data(data_path)
+    num_features: int = int(scaled_data.shape[1])
+    autoencoder: Autoencoder = Autoencoder(num_features=num_features)
 
     with mlflow.start_run():
         mlflow.log_params(
@@ -287,6 +241,7 @@ def main() -> None:
             epochs=epochs,
             batch_size=batch_size,
             learning_rate=learning_rate,
+            model=autoencoder,
         )
 
         export_scaler(scaler, scaler_path)
