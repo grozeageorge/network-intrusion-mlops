@@ -95,8 +95,8 @@ def test_preprocess_data_drops_string_columns_and_handles_inf_nan(mock_csv_file:
     assert isinstance(scaler, MinMaxScaler)
     assert scaled_data.dtype == np.float32
 
-    # Verify 3 valid rows remaining and exactly 5 numerical feature columns
-    assert scaled_data.shape == (3, 5)
+    # Verify 2 valid BENIGN rows remaining (ATTACK filtered out) and exactly 5 numerical feature columns
+    assert scaled_data.shape == (2, 5)
 
     # Assert values are strictly scaled between 0.0 and 1.0
     assert np.all((scaled_data >= 0.0) & (scaled_data <= 1.0))

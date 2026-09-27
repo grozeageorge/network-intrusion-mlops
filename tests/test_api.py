@@ -12,11 +12,7 @@ from src.ml.inference import InferenceEngine
 def test_score_telemetry_valid_payload(client: TestClient) -> None:
     """Assert valid JSON payload to POST /v1/telemetry/score returns 200 OK and anomaly scores."""
     valid_payload: dict[str, Any] = {
-        "requests_per_minute": 120.0,
-        "payload_bytes": 2500.0,
-        "header_entropy": 3.5,
-        "uri_depth": 3,
-        "error_rate": 0.02,
+        "features": [120.0, 2500.0, 3.5, 3.0, 0.02],
     }
 
     response = client.post("/v1/telemetry/score", json=valid_payload)
@@ -32,11 +28,7 @@ def test_score_telemetry_valid_payload(client: TestClient) -> None:
 def test_score_telemetry_anomalous_payload(client: TestClient) -> None:
     """Assert extreme anomalous network telemetry payload flags traffic as anomalous."""
     anomalous_payload: dict[str, Any] = {
-        "requests_per_minute": 50000.0,
-        "payload_bytes": 100000.0,
-        "header_entropy": 7.9,
-        "uri_depth": 10,
-        "error_rate": 0.99,
+        "features": [50000.0, 100000.0, 7.9, 10.0, 0.99],
     }
 
     response = client.post("/v1/telemetry/score", json=anomalous_payload)
@@ -48,10 +40,7 @@ def test_score_telemetry_anomalous_payload(client: TestClient) -> None:
 
 def test_score_telemetry_invalid_payload_missing_fields(client: TestClient) -> None:
     """Assert payload with missing required fields returns 422 Unprocessable Entity."""
-    invalid_payload: dict[str, Any] = {
-        "requests_per_minute": 120.0,
-        "payload_bytes": 2500.0,
-    }
+    invalid_payload: dict[str, Any] = {}
 
     response = client.post("/v1/telemetry/score", json=invalid_payload)
 
@@ -61,11 +50,7 @@ def test_score_telemetry_invalid_payload_missing_fields(client: TestClient) -> N
 def test_score_telemetry_out_of_bounds_validation(client: TestClient) -> None:
     """Assert feature values outside Pydantic validation bounds return 422 Unprocessable Entity."""
     out_of_bounds_payload: dict[str, Any] = {
-        "requests_per_minute": -10.0,
-        "payload_bytes": 2500.0,
-        "header_entropy": 9.5,  # Exceeds max 8.0
-        "uri_depth": 3,
-        "error_rate": 1.5,  # Exceeds max 1.0
+        "features": [],
     }
 
     response = client.post("/v1/telemetry/score", json=out_of_bounds_payload)

@@ -93,6 +93,9 @@ def preprocess_data(
 
     df: pd.DataFrame = pd.read_csv(csv_path)
 
+    if "Label" in df.columns:
+        df = df[df["Label"].astype(str).str.strip().str.upper() == "BENIGN"]
+
     df = df.drop(columns=drop_columns, errors="ignore")
     df = df.select_dtypes(include=[np.number])
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
