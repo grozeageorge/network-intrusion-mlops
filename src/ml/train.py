@@ -94,6 +94,7 @@ def preprocess_data(
     df: pd.DataFrame = pd.read_csv(csv_path)
 
     if "Label" in df.columns:
+        # pyrefly: ignore [bad-assignment]
         df = df[df["Label"].astype(str).str.strip().str.upper() == "BENIGN"]
 
     df = df.drop(columns=drop_columns, errors="ignore")
