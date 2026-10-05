@@ -11,12 +11,12 @@ import pytest
 import torch
 from sklearn.preprocessing import MinMaxScaler
 
+from src.ml.data import preprocess_data
 from src.ml.train import (
     Autoencoder,
     export_onnx,
     export_scaler,
     main,
-    preprocess_data,
     train_model,
 )
 
