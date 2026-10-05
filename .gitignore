@@ -42,3 +42,6 @@ env/
 mlruns/
 .DS_Store
 Thumbs.db
+
+# Ignore raw and processed datasets
+data/
