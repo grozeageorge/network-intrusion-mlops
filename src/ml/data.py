@@ -43,6 +43,7 @@ def preprocess_data(
         ]
 
     df: pd.DataFrame = pd.read_csv(csv_path)
+    df.columns = df.columns.str.strip()
 
     if "Label" in df.columns:
         benign_mask: pd.Series = df["Label"].astype(str).str.strip().str.upper() == "BENIGN"
