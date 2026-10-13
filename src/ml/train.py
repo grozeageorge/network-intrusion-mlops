@@ -12,11 +12,12 @@ from pathlib import Path
 import joblib
 import mlflow
 import numpy as np
-import pandas as pd
 import torch
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
+
+from src.ml.data import preprocess_data
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -72,46 +73,6 @@ class Autoencoder(nn.Module):
         encoded: torch.Tensor = self.encoder(x)
         decoded: torch.Tensor = self.decoder(encoded)
         return decoded
-
-
-def preprocess_data(
-    csv_path: str | Path,
-    drop_columns: list[str] | None = None,
-) -> tuple[np.ndarray, MinMaxScaler]:
-    """Load, clean, and scale tabular telemetry data from a CSV file.
-
-    Args:
-        csv_path: Path to the raw CSV dataset.
-        drop_columns: Optional list of metadata columns to discard.
-
-    Returns:
-        tuple[np.ndarray, MinMaxScaler]: Cleaned float32 scaled array of shape (samples, features)
-            and the fitted MinMaxScaler instance for serialization.
-    """
-    if drop_columns is None:
-        drop_columns = ["Source IP", "Destination IP", "Timestamp", "Label"]
-
-    df: pd.DataFrame = pd.read_csv(csv_path)
-
-    if "Label" in df.columns:
-        # pyrefly: ignore [bad-assignment]
-        df = df[df["Label"].astype(str).str.strip().str.upper() == "BENIGN"]
-
-    df = df.drop(columns=drop_columns, errors="ignore")
-    df = df.select_dtypes(include=[np.number])
-    df = df.replace([np.inf, -np.inf], np.nan).dropna()
-
-    scaler: MinMaxScaler = MinMaxScaler()
-    scaled_data: np.ndarray = scaler.fit_transform(df.to_numpy()).astype(np.float32)
-
-    logger.info(
-        "Preprocessed dataset %s into shape %s with values in [%.4f, %.4f]",
-        csv_path,
-        scaled_data.shape,
-        scaled_data.min(),
-        scaled_data.max(),
-    )
-    return scaled_data, scaler
 
 
 def train_model(
